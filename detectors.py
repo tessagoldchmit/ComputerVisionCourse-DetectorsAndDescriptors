@@ -23,11 +23,11 @@ class AugmentationType(Enum):
 class DetectorType(Enum):
     HARRIS = auto()
     FAST = auto()
-    ORB = auto()
     SIFT = auto()
+    ORB = auto()
 
 
-# Function to detect keypoints using the specified גקאקבאםר type
+# Function to detect keypoints using the specified type
 def detect_keypoints(image: np.ndarray, detector_type: DetectorType) -> List[cv2.KeyPoint]:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
@@ -174,19 +174,36 @@ def plot_results(mean_repeatability: Dict[str, List[float]],
     plt.show()
 
 
+def calc_metrics(keypoints_original, keypoints_transformed):
+    # Evaluate repeatability and localization error
+    distances = compute_pairwise_distances(keypoints_original, keypoints_transformed)
+    if distances.size == 0:
+        repeatability = 0.0
+        localization_error = float("inf")
+    else:
+        # Calculate repeatability
+        matches = np.any(distances <= 5.0, axis=1).sum()
+        repeatability = round(matches / max(len(keypoints_original), len(keypoints_transformed)), 2)
+
+        # Calculate localization error
+        min_distances = np.min(distances, axis=1)
+        localization_error = round(float(np.mean(min_distances)), 2)
+
+    return repeatability, localization_error
+
+
+def load_image(image_path: str):
+    image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    image = cv2.resize(image, (100, 100))  # # Resize for optimization
+    return image
+
+
 def process_image(image_path: str, augmentations: list, detectors: list) -> Dict:
     """
     Process a single image with all augmentations and detectors.
     """
     results = {"repeatability": {}, "localization_error": {}}
-    image = cv2.imread(image_path, cv2.IMREAD_COLOR)
-
-    if image is None:
-        print(f"Could not read image: {image_path}")
-        return results
-
-    # Resize for optimization
-    image = cv2.resize(image, (100, 100))
+    image = load_image(image_path)
 
     for augmentation in augmentations:
         # Apply augmentation
@@ -202,21 +219,8 @@ def process_image(image_path: str, augmentations: list, detectors: list) -> Dict
             # Transform keypoints back to the original coordinate system
             keypoints_transformed = transform_keypoints(keypoints_transformed, transformation_matrix)
 
-            # Evaluate repeatability and localization error
-            distances = compute_pairwise_distances(keypoints_original, keypoints_transformed)
-            if distances.size == 0:
-                repeatability = 0.0
-                localization_error = float("inf")
-            else:
-                # Calculate repeatability
-                matches = np.any(distances <= 5.0, axis=1).sum()
-                repeatability = round(matches / max(len(keypoints_original), len(keypoints_transformed)), 2)
-
-                # Calculate localization error
-                min_distances = np.min(distances, axis=1)
-                localization_error = round(float(np.mean(min_distances)), 2)
-
-            # Store results
+            # Evaluate repeatability and localization error & store results
+            repeatability, localization_error = calc_metrics(keypoints_original, keypoints_transformed)
             results["repeatability"][(augmentation.name, detector.name)] = repeatability
             results["localization_error"][(augmentation.name, detector.name)] = localization_error
 
@@ -231,17 +235,9 @@ def main():
     detectors = list(DetectorType)
 
     all_results = []
-
-    # Use multiprocessing for parallel processing
-    with Pool(processes=os.cpu_count()) as pool:
-        for image_path in image_paths:
-            all_results.append(
-                pool.apply_async(
-                    process_image,
-                    args=(image_path, augmentations, detectors),
-                )
-            )
-        all_results = [res.get() for res in all_results]  # Collect results
+    for image_path in image_paths:
+        result = process_image(image_path, augmentations, detectors)
+        all_results.append(result)
 
     # Aggregate results
     repeatability = {aug.name: {det.name: [] for det in detectors} for aug in augmentations}
