@@ -29,5 +29,3 @@ def orb_descriptor(image):
     orb = cv2.ORB_create()
     keypoints, descriptors = orb.detectAndCompute(image, None)
     return keypoints, descriptors
-
-

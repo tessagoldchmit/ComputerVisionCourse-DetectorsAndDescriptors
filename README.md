@@ -1,1 +1,2 @@
-# ComputerVisionCourse-DetectorsAndDescriptors
+# הערכת ביצועים של גלאי נקודות תחת עיוותים שונים
+
