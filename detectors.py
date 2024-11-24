@@ -15,14 +15,20 @@ class AugmentationType(Enum):
     SCALE_0_5 = auto()
     SCALE_2_0 = auto()
     BLUR = auto()
-    NOISE_25 = auto()
-    NOISE_50 = auto()
+    NOISE_5 = auto()
+    NOISE_10 = auto()
 
 
 # Enum for detector types
 class DetectorType(Enum):
     HARRIS = auto()
     FAST = auto()
+    SIFT = auto()
+    ORB = auto()
+
+
+# Enum for descriptor types
+class DescriptorType(Enum):
     SIFT = auto()
     ORB = auto()
 
@@ -86,10 +92,10 @@ def apply_augmentations(image, augmentation):
         return _scale_image(2.0)
     elif augmentation == AugmentationType.BLUR:
         return cv2.GaussianBlur(image, (5, 5), 0), np.eye(3, dtype=np.float32)
-    elif augmentation == AugmentationType.NOISE_25:
-        return _add_noise(25)
-    elif augmentation == AugmentationType.NOISE_50:
-        return _add_noise(50)
+    elif augmentation == AugmentationType.NOISE_5:
+        return _add_noise(5)
+    elif augmentation == AugmentationType.NOISE_10:
+        return _add_noise(10)
     else:
         return image, np.eye(3, dtype=np.float32)
 
@@ -101,8 +107,12 @@ def transform_keypoints(keypoints, transformation_matrix) -> List[cv2.KeyPoint]:
 
     points = np.array([kp.pt for kp in keypoints], dtype=np.float32).reshape(-1, 1, 2)
     transformed_points = cv2.transform(points, transformation_matrix)
+
+    # Extract scale from transformation matrix
+    scale = np.sqrt(transformation_matrix[0, 0] ** 2 + transformation_matrix[0, 1] ** 2)
+
     return [
-        cv2.KeyPoint(x=float(pt[0][0]), y=float(pt[0][1]), size=kp.size)
+        cv2.KeyPoint(x=float(pt[0][0]), y=float(pt[0][1]), size=kp.size * scale)
         for pt, kp in zip(transformed_points, keypoints)
     ]
 
@@ -193,22 +203,32 @@ def calc_metrics(keypoints_original, keypoints_transformed):
         repeatability = 0.0
         localization_error = float("inf")
     else:
+        threshold = 5.0
+
+        # Find matches (points within threshold)
+        matches_mask = distances <= threshold
+        matches = np.any(matches_mask, axis=1)
+
         # Calculate repeatability
-        matches = np.any(distances <= 5.0, axis=1).sum()
         repeatability = round(
-            matches / max(len(keypoints_original), len(keypoints_transformed)), 2
+            matches.sum() / max(len(keypoints_original), len(keypoints_transformed)), 2
         )
 
-        # Calculate localization error
-        min_distances = np.min(distances, axis=1)
-        localization_error = round(float(np.mean(min_distances)), 2)
+        # Calculate localization error only for matched points
+        matched_distances = distances[
+            matches_mask
+        ]  # Get distances only for matched points
+        localization_error = (
+            round(float(np.mean(matched_distances)), 2)
+            if matched_distances.size > 0
+            else float("inf")
+        )
 
     return repeatability, localization_error
 
 
 def load_image(image_path):
     image = cv2.imread(image_path, cv2.IMREAD_COLOR)
-    image = cv2.resize(image, (100, 100))  # # Resize for optimization
     return image
 
 
@@ -222,6 +242,7 @@ def visualize_keypoints(image, keypoints, title):
         x, y = kp.pt
         ax.plot(x, y, "ro", markersize=5)
     ax.set_title(title)
+    os.makedirs("plots", exist_ok=True)
     plt.savefig(f"plots\\{title}.png", dpi=300)
     plt.close()
 
@@ -258,11 +279,15 @@ def process_image(image_path, augmentations, detectors, pbar):
                 (augmentation.name, detector.name)
             ] = localization_error
 
-            visualize_keypoints(image, keypoints_original, f"ORIGINAL_{os.path.basename(image_path)}_{detector.name}")
+            visualize_keypoints(
+                image,
+                keypoints_original,
+                f"{os.path.basename(image_path)}_{detector.name}",
+            )
             visualize_keypoints(
                 transformed_image,
                 keypoints_transformed,
-                f"TRANSFORMED_{os.path.basename(image_path)}_{detector.name}_{augmentation.name}",
+                f"{os.path.basename(image_path)}_{detector.name}_{augmentation.name}",
             )
 
             # Update the progress bar after completing one detector for one augmentation
@@ -278,7 +303,7 @@ def main():
         for filename in os.listdir(image_dir)
         if filename.endswith(".png")
     ]
-    # image_paths = [image_paths[0]]
+    # image_paths = [image_paths[1]]
 
     augmentations = list(AugmentationType)
     detectors = list(DetectorType)
