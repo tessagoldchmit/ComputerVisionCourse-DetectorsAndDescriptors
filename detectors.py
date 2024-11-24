@@ -38,8 +38,8 @@ def detect_keypoints(image, detector_type) -> List[cv2.KeyPoint]:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
     if detector_type == DetectorType.HARRIS:
-        harris = cv2.cornerHarris(gray, blockSize=3, ksize=3, k=0.04)
-        harris = cv2.dilate(harris, None)
+        harris = cv2.cornerHarris(gray, blockSize=2, ksize=3, k=0.04)
+        # harris = cv2.dilate(harris, None)
         keypoints = np.argwhere(harris > 0.01 * harris.max())
         return [cv2.KeyPoint(float(x[1]), float(x[0]), 1) for x in keypoints]
 
@@ -67,9 +67,7 @@ def apply_augmentations(image, augmentation):
         return cv2.warpAffine(image, rotation_matrix, image.shape[:2]), rotation_matrix
 
     def _scale_image(scale_factor):
-        scale_matrix = np.array(
-            [[scale_factor, 0, 0], [0, scale_factor, 0]], dtype=np.float32
-        )
+        scale_matrix = np.array([[scale_factor, 0, 0], [0, scale_factor, 0]], dtype=np.float32)
         new_size = (
             int(image.shape[1] * scale_factor),
             int(image.shape[0] * scale_factor),
@@ -77,10 +75,9 @@ def apply_augmentations(image, augmentation):
         return cv2.warpAffine(image, scale_matrix, new_size), scale_matrix
 
     def _add_noise(noise_level):
-        noise = np.random.normal(0, noise_level, image.shape).astype(np.int16)
-        return np.clip(image.astype(np.int16) + noise, 0, 255).astype(np.uint8), np.eye(
-            3, dtype=np.float32
-        )
+        noise = np.random.normal(0, noise_level**0.5, image.shape).astype(np.int16)
+        noisy_image = np.clip(image.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        return noisy_image, None
 
     if augmentation == AugmentationType.ROTATE_30:
         return _rotate_image(30)
@@ -91,30 +88,25 @@ def apply_augmentations(image, augmentation):
     elif augmentation == AugmentationType.SCALE_2_0:
         return _scale_image(2.0)
     elif augmentation == AugmentationType.BLUR:
-        return cv2.GaussianBlur(image, (5, 5), 0), np.eye(3, dtype=np.float32)
+        return cv2.GaussianBlur(image, (5, 5), 0), None
     elif augmentation == AugmentationType.NOISE_5:
         return _add_noise(5)
     elif augmentation == AugmentationType.NOISE_10:
         return _add_noise(10)
     else:
-        return image, np.eye(3, dtype=np.float32)
+        return image, None
 
 
-# Transform keypoints to match the original coordinate system
 def transform_keypoints(keypoints, transformation_matrix) -> List[cv2.KeyPoint]:
-    if not keypoints:
-        return []
+    if not keypoints or transformation_matrix is None:
+        return keypoints
 
+    # Transform the points using the forward matrix
     points = np.array([kp.pt for kp in keypoints], dtype=np.float32).reshape(-1, 1, 2)
     transformed_points = cv2.transform(points, transformation_matrix)
 
-    # Extract scale from transformation matrix
-    scale = np.sqrt(transformation_matrix[0, 0] ** 2 + transformation_matrix[0, 1] ** 2)
-
-    return [
-        cv2.KeyPoint(x=float(pt[0][0]), y=float(pt[0][1]), size=kp.size * scale)
-        for pt, kp in zip(transformed_points, keypoints)
-    ]
+    # Create new keypoints with transformed coordinates
+    return [cv2.KeyPoint(x=float(pt[0][0]), y=float(pt[0][1]), size=kp.size) for pt, kp in zip(transformed_points, keypoints)]
 
 
 # Utility function to compute pairwise distances
@@ -192,7 +184,7 @@ def plot_results(
 
     # Finalize and Show
     plt.tight_layout()
-    plt.savefig("results_plot.png", dpi=300)  # Save the plot as a high-resolution image
+    plt.savefig("results_plot1.png", dpi=300)  # Save the plot as a high-resolution image
     # plt.show()
 
 
@@ -210,19 +202,11 @@ def calc_metrics(keypoints_original, keypoints_transformed):
         matches = np.any(matches_mask, axis=1)
 
         # Calculate repeatability
-        repeatability = round(
-            matches.sum() / max(len(keypoints_original), len(keypoints_transformed)), 2
-        )
+        repeatability = round(matches.sum() / max(len(keypoints_original), len(keypoints_transformed)), 2) * 100
 
         # Calculate localization error only for matched points
-        matched_distances = distances[
-            matches_mask
-        ]  # Get distances only for matched points
-        localization_error = (
-            round(float(np.mean(matched_distances)), 2)
-            if matched_distances.size > 0
-            else float("inf")
-        )
+        matched_distances = distances[matches_mask]  # Get distances only for matched points
+        localization_error = round(float(np.mean(matched_distances)), 2) if matched_distances.size > 0 else float("inf")
 
     return repeatability, localization_error
 
@@ -242,8 +226,9 @@ def visualize_keypoints(image, keypoints, title):
         x, y = kp.pt
         ax.plot(x, y, "ro", markersize=5)
     ax.set_title(title)
-    os.makedirs("plots", exist_ok=True)
-    plt.savefig(f"plots\\{title}.png", dpi=300)
+    output_dir = "plots1"
+    os.makedirs(output_dir, exist_ok=True)
+    plt.savefig(os.path.join(output_dir, f"{title}.png"))
     plt.close()
 
 
@@ -256,38 +241,35 @@ def process_image(image_path, augmentations, detectors, pbar):
 
     for augmentation in augmentations:
         # Apply augmentation
-        transformed_image, transformation_matrix = apply_augmentations(
-            image, augmentation
-        )
+        transformed_image, transformation_matrix = apply_augmentations(image, augmentation)
 
         for detector in detectors:
             # Detect keypoints in the original and transformed images
             keypoints_original = detect_keypoints(image, detector)
             keypoints_transformed = detect_keypoints(transformed_image, detector)
 
-            # Transform keypoints back to the original coordinate system
-            keypoints_transformed_original_coordinate_system = transform_keypoints(
-                keypoints_transformed, transformation_matrix
-            )
+            # Transform original keypoints into the transformed image's coordinate system
+            if transformation_matrix is not None:
+                keypoints_original_in_transformed_coords = transform_keypoints(keypoints_original, transformation_matrix)
+            else:
+                keypoints_original_in_transformed_coords = keypoints_original
 
-            # Evaluate repeatability and localization error & store results
-            repeatability, localization_error = calc_metrics(
-                keypoints_original, keypoints_transformed_original_coordinate_system
-            )
+            # Evaluate repeatability and localization error between transformed keypoints and detected keypoints
+            repeatability, localization_error = calc_metrics(keypoints_original_in_transformed_coords, keypoints_transformed)
+
+            # Store results
             results["repeatability"][(augmentation.name, detector.name)] = repeatability
-            results["localization_error"][
-                (augmentation.name, detector.name)
-            ] = localization_error
+            results["localization_error"][(augmentation.name, detector.name)] = localization_error
 
             visualize_keypoints(
                 image,
                 keypoints_original,
-                f"{os.path.basename(image_path)}_{detector.name}",
+                f"{os.path.basename(image_path.split(".")[0])}_{detector.name}",
             )
             visualize_keypoints(
                 transformed_image,
                 keypoints_transformed,
-                f"{os.path.basename(image_path)}_{detector.name}_{augmentation.name}",
+                f"{os.path.basename(image_path.split(".")[0])}_{detector.name}_{augmentation.name}",
             )
 
             # Update the progress bar after completing one detector for one augmentation
@@ -297,13 +279,8 @@ def process_image(image_path, augmentations, detectors, pbar):
 
 
 def main():
-    image_dir = "images"
-    image_paths = [
-        os.path.join(image_dir, filename)
-        for filename in os.listdir(image_dir)
-        if filename.endswith(".png")
-    ]
-    # image_paths = [image_paths[1]]
+    image_dir = "images1"
+    image_paths = [os.path.join(image_dir, f) for f in os.listdir(image_dir) if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
 
     augmentations = list(AugmentationType)
     detectors = list(DetectorType)
@@ -319,12 +296,8 @@ def main():
             all_results.append(result)
 
     # Aggregate results
-    repeatability = {
-        aug.name: {det.name: [] for det in detectors} for aug in augmentations
-    }
-    localization_error = {
-        aug.name: {det.name: [] for det in detectors} for aug in augmentations
-    }
+    repeatability = {aug.name: {det.name: [] for det in detectors} for aug in augmentations}
+    localization_error = {aug.name: {det.name: [] for det in detectors} for aug in augmentations}
 
     for result in all_results:
         for key, value in result["repeatability"].items():
@@ -336,19 +309,11 @@ def main():
             localization_error[aug][det].append(value)
 
     # Compute mean values for each augmentation and detector
-    mean_repeatability = {
-        aug: [np.mean(repeatability[aug][det.name]) for det in detectors]
-        for aug in repeatability
-    }
-    mean_localization_error = {
-        aug: [np.mean(localization_error[aug][det.name]) for det in detectors]
-        for aug in localization_error
-    }
+    mean_repeatability = {aug: [np.mean(repeatability[aug][det.name]) for det in detectors] for aug in repeatability}
+    mean_localization_error = {aug: [np.mean(localization_error[aug][det.name]) for det in detectors] for aug in localization_error}
 
     # Plot results
-    plot_results(
-        mean_repeatability, mean_localization_error, [aug.name for aug in augmentations]
-    )
+    plot_results(mean_repeatability, mean_localization_error, [aug.name for aug in augmentations])
 
 
 if __name__ == "__main__":
