@@ -124,13 +124,12 @@ def compute_pairwise_distances(original, transformed) -> np.ndarray:
 def plot_results(
     mean_repeatability,
     mean_localization_error,
-    augmentation_labels,
 ):
     """
     Plots the mean repeatability and localization error as histograms.
     """
-    # Extract detector names from the dictionary keys
-    detectors = [det.name for det in DetectorType]  # Ensure proper names for detectors
+    augmentations = [aug.name for aug in AugmentationType]
+    detectors = [det.name for det in DetectorType]
 
     # Repeatability plot
     plt.figure(figsize=(14, 7))
@@ -138,12 +137,12 @@ def plot_results(
     # Plot Repeatability
     plt.subplot(1, 2, 1)
     width = 0.2  # Bar width
-    x = np.arange(len(augmentation_labels))  # x-axis positions for bars
+    x = np.arange(len(augmentations))  # x-axis positions for bars
 
     for i, detector in enumerate(detectors):
         plt.bar(
             x + i * width,
-            [mean_repeatability[aug][i] for aug in augmentation_labels],
+            [mean_repeatability[aug][i] for aug in augmentations],
             width,
             label=detector,
         )
@@ -153,7 +152,7 @@ def plot_results(
     plt.ylabel("Repeatability (%)", fontsize=12)
     plt.xticks(
         x + (len(detectors) - 1) * width / 2,
-        augmentation_labels,
+        augmentations,
         rotation=45,
         ha="right",
         fontsize=10,
@@ -165,7 +164,7 @@ def plot_results(
     for i, detector in enumerate(detectors):
         plt.bar(
             x + i * width,
-            [mean_localization_error[aug][i] for aug in augmentation_labels],
+            [mean_localization_error[aug][i] for aug in augmentations],
             width,
             label=detector,
         )
@@ -175,7 +174,7 @@ def plot_results(
     plt.ylabel("Localization Error", fontsize=12)
     plt.xticks(
         x + (len(detectors) - 1) * width / 2,
-        augmentation_labels,
+        augmentations,
         rotation=45,
         ha="right",
         fontsize=10,
@@ -232,10 +231,11 @@ def visualize_keypoints(image, keypoints, title):
     plt.close()
 
 
-def process_image(image_path, augmentations, detectors, pbar):
+def process_image(image_path, pbar):
     """
     Process a single image with all augmentations and detectors.
     """
+    augmentations, detectors = list(AugmentationType), list(DescriptorType)
     results = {"repeatability": {}, "localization_error": {}}
     image = load_image(image_path)
 
@@ -278,42 +278,36 @@ def process_image(image_path, augmentations, detectors, pbar):
     return results
 
 
+def aggregate_results(results):
+    repeatability = {}
+    localization_error = {}
+
+    for result in results:
+        for aug_det, value in result["repeatability"].items():
+            repeatability.setdefault(aug_det, []).append(value)
+
+        for aug_det, value in result["localization_error"].items():
+            localization_error.setdefault(aug_det, []).append(value)
+
+    mean_repeatability = {k: np.mean(v) for k, v in repeatability.items()}
+    mean_localization_error = {k: np.mean(v) for k, v in localization_error.items()}
+
+    return mean_repeatability, mean_localization_error
+
+
 def main():
     image_dir = "images1"
     image_paths = [os.path.join(image_dir, f) for f in os.listdir(image_dir) if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
 
-    augmentations = list(AugmentationType)
-    detectors = list(DetectorType)
-
-    # Calculate total number of tasks
-    total_tasks = len(image_paths) * len(augmentations) * len(detectors)
-
-    # Initialize a single progress bar
+    total_tasks = len(image_paths) * len(list(AugmentationType)) * len(list(DetectorType))
     with tqdm(total=total_tasks, desc="Processing All Tasks", unit="task") as pbar:
         all_results = []
         for image_path in image_paths:
-            result = process_image(image_path, augmentations, detectors, pbar)
+            result = process_image(image_path, pbar)
             all_results.append(result)
 
-    # Aggregate results
-    repeatability = {aug.name: {det.name: [] for det in detectors} for aug in augmentations}
-    localization_error = {aug.name: {det.name: [] for det in detectors} for aug in augmentations}
-
-    for result in all_results:
-        for key, value in result["repeatability"].items():
-            aug, det = key
-            repeatability[aug][det].append(value)
-
-        for key, value in result["localization_error"].items():
-            aug, det = key
-            localization_error[aug][det].append(value)
-
-    # Compute mean values for each augmentation and detector
-    mean_repeatability = {aug: [np.mean(repeatability[aug][det.name]) for det in detectors] for aug in repeatability}
-    mean_localization_error = {aug: [np.mean(localization_error[aug][det.name]) for det in detectors] for aug in localization_error}
-
-    # Plot results
-    plot_results(mean_repeatability, mean_localization_error, [aug.name for aug in augmentations])
+    mean_repeatability, mean_localization_error = aggregate_results(all_results)
+    plot_results(mean_repeatability, mean_localization_error)
 
 
 if __name__ == "__main__":
